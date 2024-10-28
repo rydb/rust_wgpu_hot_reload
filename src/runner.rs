@@ -571,7 +571,7 @@ pub fn start_app(data: Arc<Mutex<lib::reload_flags::ReloadFlags>>) {
             console_log::init().expect("could not initialize logger");
             wasm_bindgen_futures::spawn_local(async move { run(data).await })
         } else {
-            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+            env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
             pollster::block_on(run(data));
         }
     }

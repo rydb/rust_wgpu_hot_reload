@@ -1,57 +1,108 @@
-// Flocking boids example with gpu compute update pass
-// adapted from https://github.com/gfx-rs/wgpu/tree/trunk/examples/boids
-
-// This example cannot run in WebGL because it uses compute shaders.
-// See the README for more details.
-
-use nanorand::{Rng, WyRand};
 use wgpu::util::DeviceExt;
+use wgpu::VertexState;
 
 use crate::frame_rate::FrameRate;
-use crate::program::{PipelineError, PipelineFuncs};
+use crate::pipeline::{PipelineError, PipelineFuncs};
 use crate::ShaderBuilderForLibrary;
 
-const NUM_PARTICLES: u32 = 1500;
-const PARTICLES_PER_GROUP: u32 = 64;
-
-struct ComputePass {
-    compute_pipeline: wgpu::ComputePipeline,
-    particle_bind_groups: Vec<wgpu::BindGroup>,
-    work_group_count: u32,
-    parameters: wgpu::Buffer,
-    bind_group_layout: wgpu::BindGroupLayout,
-}
-
-struct RenderPass {
-    render_pipeline: wgpu::RenderPipeline,
-    particle_buffers: Vec<wgpu::Buffer>,
-    vertices_buffer: wgpu::Buffer,
-}
-
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct BoidsSettings {
-    delta_t: f32,        // cohesion
-    rule1_distance: f32, // separation
-    rule2_distance: f32, // alignment
-    rule3_distance: f32,
-    rule1_scale: f32,
-    rule2_scale: f32,
-    rule3_scale: f32,
-    speed: f32,
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    color: [f32; 3],
 }
 
-impl BoidsSettings {
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-1.0, -1.0, 0.0],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, -1.0, 0.0],
+        color: [0.0, 0.0, 1.0],
+    },
+
+
+    Vertex {
+        position: [1.0, -1.0, 0.0],
+        color: [0.0, 0.0, 1.0],
+    },
+    Vertex {
+        position: [1.0, 1.0, 0.0],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        color: [1.0, 0.0, 0.0],
+    },
+];
+
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x3,
+                }
+            ]
+        }
+    }
+}
+
+const INDICES: &[u16] = &[0, 1, 2, 3, 4, 5,/* padding */ 0];
+
+
+
+// pub const SCREEN_VERT =
+/// A simple struct to store a wgpu pass with a uniform buffer.
+#[derive(Debug)]
+pub struct Pass {
+    /// Pipeline that will be called to render the pass
+    pub pipeline: wgpu::RenderPipeline,
+    // Buffer bind group for this pass.
+    //pub bind_group: wgpu::BindGroup,
+    // Single uniform buffer for this pass.
+    //pub uniform_buf: wgpu::Buffer,
+}
+
+/// Settings for the `PipelineFuncs`
+/// `polygon_edge_count` is not exposed in ui on purpose for  purposes
+/// change it in the code with hot-reload enable to see it working.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GlowSettings {
+    // // elapsed take the speed into consideration
+    // elapsed: f32,
+    // /// polygon radius in window, between 0 and 1
+    // polygon_size: f32, // exposed in ui
+    // /// regular polygon edge count, expected to be 3 or more
+    // polygon_edge_count: u32, // exposed in rust only
+    // /// speed of the rotation
+    // speed: f32, // exposed in ui
+}
+
+impl GlowSettings {
     pub fn new() -> Self {
         Self {
-            delta_t: 0.04f32,
-            rule1_distance: 0.08,
-            rule2_distance: 0.025,
-            rule3_distance: 0.025,
-            rule1_scale: 0.02,
-            rule2_scale: 0.05,
-            rule3_scale: 0.005,
-            speed: 1.0,
+            // elapsed: 0.0,
+            // polygon_size: 0.5,
+            // polygon_edge_count: 3,
+            // speed: 1.0,
         }
     }
 
@@ -59,69 +110,112 @@ impl BoidsSettings {
         std::mem::size_of::<Self>() as _
     }
 }
-
-/// Example struct holds references to wgpu resources and frame persistent data
+///  Pipeline showcasing the three type of live updates via the rotation of a regular polygon
+///
+///     shader: `draw.wgsl`
+///     rust: `polygon_edge_count` in [`PipelineFuncs::update`]
+///     ui: `size` and `speed`
+#[derive(Debug)]
 pub struct Pipeline {
-    settings: BoidsSettings,
-    compute_pass: ComputePass,
-    render_pass: RenderPass,
-    frame_rate: FrameRate,
+    render_pass: Pass,
+    _start_time: web_time::Instant, // std::time::Instant is not compatible with wasm
     last_update: web_time::Instant,
+    settings: GlowSettings,
+    frame_rate: FrameRate,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    screen_resolution: wgpu::BindGroup,
+    num_indices: u32
 }
 
 impl PipelineFuncs for Pipeline {
-    fn required_downlevel_capabilities() -> wgpu::DownlevelCapabilities {
-        wgpu::DownlevelCapabilities {
-            flags: wgpu::DownlevelFlags::COMPUTE_SHADERS,
-            ..Default::default()
-        }
-    }
-
-    fn required_limits() -> wgpu::Limits {
-        // Stricter than default.
-        wgpu::Limits::downlevel_defaults()
-    }
-
-    /// Get program name.
-    fn get_name() -> &'static str {
-        "demo boids"
-    }
-
-    /// constructs initial instance of Example struct
+    /// Create pipeline.
+    /// Assume the `render_pipeline` will be properly initialized.
     fn init(
         surface: &wgpu::Surface,
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
         _surface_configuration: &wgpu::SurfaceConfiguration,
     ) -> Result<Self, PipelineError> {
-        let settings = BoidsSettings::new();
+        let render_pass = Self::create_render_pass(surface, device, adapter)?;
 
-        let (compute_pass, render_pass) = Self::create_passes(surface, device, adapter)?;
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Vertex Buffer"),
+            contents: bytemuck::cast_slice(VERTICES),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Index Buffer"),
+            contents: bytemuck::cast_slice(INDICES),
+            usage: wgpu::BufferUsages::INDEX,
+        });
 
-        Ok(Pipeline {
-            settings,
-            compute_pass,
+        let screen_resolution =
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Screen resolution"),
+            contents: &[255, 255],
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let screen_resolution_bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_resolution.as_entire_binding(),
+                },
+            ],
+        });
+
+        let num_indices = INDICES.len() as u32;
+
+        Ok(Self {
             render_pass,
-            frame_rate: FrameRate::new(100),
+            _start_time: web_time::Instant::now(),
             last_update: web_time::Instant::now(),
+            settings: GlowSettings::new(),
+            frame_rate: FrameRate::default(),
+            vertex_buffer,
+            index_buffer,
+            num_indices,
+            screen_resolution: screen_resolution_bindgroup,
         })
     }
 
-    /// update is called for any WindowEvent not handled by the framework
+    /// Get pipeline name.
+    fn get_name() -> &'static str {
+        "demo polygon"
+    }
+
+    /// Recreate render pass.
     fn update_passes(
         &mut self,
         surface: &wgpu::Surface,
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
     ) -> Result<(), PipelineError> {
-        self.compute_pass.compute_pipeline =
-            Self::create_compute_pipeline(device, &self.compute_pass.bind_group_layout)?;
-        self.render_pass.render_pipeline = Self::create_render_pipeline(surface, device, adapter)?;
-
+        self.render_pass = Self::create_render_pass(surface, device, adapter)?;
         Ok(())
     }
 
-    /// resize is called on WindowEvent::Resized events
+    // Resize owned textures if needed, nothing for the demo here.
     fn resize(
         &mut self,
         _surface_configuration: &wgpu::SurfaceConfiguration,
@@ -130,182 +224,116 @@ impl PipelineFuncs for Pipeline {
     ) {
     }
 
+    /// Update pipeline before rendering.
     fn update(&mut self, queue: &wgpu::Queue) {
+        // Set the edge count of the regular polygon.
+        // This is not exposed in the ui on purpose to demonstrate the rust hot reload.
+        //self.settings.polygon_edge_count = 7;
+
+        // update elapsed time, taking speed into consideration.
         let last_frame_duration = self.last_update.elapsed().as_secs_f32();
+        //self.settings.elapsed += last_frame_duration * self.settings.speed;
         self.frame_rate.update(last_frame_duration);
         self.last_update = web_time::Instant::now();
+        // queue.write_buffer(
+        //     &self.render_pass.uniform_buf,
+        //     0,
+        //     bytemuck::cast_slice(&[self.settings]),
+        // );
+    }
 
-        // update speed from rust only for demo purposes.
-        self.settings.speed = 1.0;
+    /// Render pipeline.
+    fn render(&self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
+        // We draw a regular polygon with n edges
+        // by drawing the n triangles starting from the center and with two adjacent vertices
+        // hence the * 3 vertex count, a square results in 4 triangles so 12 vertices to draw.
+        //let vertex_count = self.settings.polygon_edge_count * 3;
 
-        // update simulation parameters on gpu.
-        self.settings.delta_t = last_frame_duration;
-        queue.write_buffer(
-            &self.compute_pass.parameters,
-            0,
-            bytemuck::cast_slice(&[self.settings]),
-        );
+        // Create a command encoder.
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        {
+            // render pass.
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            render_pass.set_pipeline(&self.render_pass.pipeline);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+        }
+
+        queue.submit(Some(encoder.finish()));
     }
 
     /// Draw ui with egui.
     fn draw_ui(&mut self, ui: &mut egui::Ui) {
         ui.heading("Settings");
         ui.separator();
-        ui.label("Cohesion");
-        ui.add(egui::Slider::new(&mut self.settings.rule1_distance, 0.0..=0.1).text("distance"));
-        ui.add(egui::Slider::new(&mut self.settings.rule1_scale, 0.0..=0.1).text("scale"));
-
+        // ui.add(egui::Slider::new(&mut self.settings.polygon_size, 0.0..=1.0).text("size"));
+        // ui.add(egui::Slider::new(&mut self.settings.speed, 0.0..=20.0).text("speed"));
         ui.separator();
-
-        ui.label("Separation");
-        ui.add(egui::Slider::new(&mut self.settings.rule2_distance, 0.0..=0.1).text("distance"));
-        ui.add(egui::Slider::new(&mut self.settings.rule2_scale, 0.0..=0.1).text("scale"));
-
-        ui.separator();
-
-        ui.label("Alignment");
-        ui.add(egui::Slider::new(&mut self.settings.rule3_distance, 0.0..=0.1).text("distance"));
-        ui.add(egui::Slider::new(&mut self.settings.rule3_scale, 0.0..=0.1).text("scale"));
-
-        ui.separator();
-
-        ui.label(std::format!(
-            "speed: {} (rust only for demo purposes)",
-            self.settings.speed
-        ));
+        // ui.label(std::format!(
+        //     "edge count: {} (rust only for demo purposes)",
+        //     self.settings.polygon_edge_count
+        // ));
         ui.label(std::format!("framerate: {:.0}fps", self.frame_rate.get()));
-    }
-
-    /// render is called each frame, dispatching compute groups proportional
-    ///   a TriangleList draw call for all NUM_PARTICLES at 3 vertices each
-    fn render(&self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
-        // create render pass descriptor and its color attachments
-        let color_attachments = [Some(wgpu::RenderPassColorAttachment {
-            view,
-            resolve_target: None,
-            ops: wgpu::Operations {
-                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                store: wgpu::StoreOp::Store,
-            },
-        })];
-        let render_pass_descriptor = wgpu::RenderPassDescriptor {
-            label: None,
-            color_attachments: &color_attachments,
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-        };
-
-        // get command encoder
-        let mut command_encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        command_encoder.push_debug_group("compute boid movement");
-        {
-            // compute pass
-            let mut cpass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: None,
-                timestamp_writes: None,
-            });
-            cpass.set_pipeline(&self.compute_pass.compute_pipeline);
-            cpass.set_bind_group(
-                0,
-                &self.compute_pass.particle_bind_groups[self.frame_rate.get_parity() as usize],
-                &[],
-            );
-            cpass.dispatch_workgroups(self.compute_pass.work_group_count, 1, 1);
-        }
-        command_encoder.pop_debug_group();
-
-        command_encoder.push_debug_group("render boids");
-        {
-            // render pass
-            let mut rpass = command_encoder.begin_render_pass(&render_pass_descriptor);
-            rpass.set_pipeline(&self.render_pass.render_pipeline);
-            // render dst particles
-            rpass.set_vertex_buffer(
-                0,
-                self.render_pass.particle_buffers[(self.frame_rate.get_parity() as usize + 1) % 2]
-                    .slice(..),
-            );
-            // the three instance-local vertices
-            rpass.set_vertex_buffer(1, self.render_pass.vertices_buffer.slice(..));
-            rpass.draw(0..3, 0..NUM_PARTICLES);
-        }
-        command_encoder.pop_debug_group();
-
-        // done
-        queue.submit(Some(command_encoder.finish()));
     }
 }
 
 impl Pipeline {
-    fn create_compute_pipeline(
-        device: &wgpu::Device,
-        compute_bind_group_layout: &wgpu::BindGroupLayout,
-    ) -> Result<wgpu::ComputePipeline, PipelineError> {
-        let compute_shader =
-            ShaderBuilderForLibrary::create_module(device, "demos/boids/compute.wgsl")?;
-
-        let compute_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("compute"),
-                bind_group_layouts: &[compute_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Compute pipeline"),
-            layout: Some(&compute_pipeline_layout),
-            module: &compute_shader,
-            entry_point: "main",
-            compilation_options: wgpu::PipelineCompilationOptions::default(),
-            cache: None,
-        });
-
-        Ok(compute_pipeline)
-    }
-
+    /// Create render pipeline.
+    /// In debug mode it will return a `PipelineError` if it failed compiling a shader
+    /// In release/wasm, il will crash since wgpu does not return errors in such situations.
     fn create_render_pipeline(
         surface: &wgpu::Surface,
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
+        //uniforms_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Result<wgpu::RenderPipeline, PipelineError> {
-        let draw_shader = ShaderBuilderForLibrary::create_module(device, "demos/boids/draw.wgsl")?;
+        
+        
+        
+        let shader = ShaderBuilderForLibrary::create_module(device, "glow_shader.wgsl")?;
+        // let shader = ShaderBuilder::create_module(device, "test_preprocessor/draw.wgsl")?; // uncomment to test preprocessor
 
         let swapchain_capabilities = surface.get_capabilities(adapter);
         let swapchain_format = swapchain_capabilities.formats[0];
 
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("render"),
-                bind_group_layouts: &[],
-                push_constant_ranges: &[],
-            });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[
+                //uniforms_bind_group_layout
+            ],
+            push_constant_ranges: &[],
+        });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
-            layout: Some(&render_pipeline_layout),
+            layout: Some(&layout),
             vertex: wgpu::VertexState {
-                module: &draw_shader,
-                entry_point: "main_vs",
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: 4 * 4,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2],
-                    },
-                    wgpu::VertexBufferLayout {
-                        array_stride: 2 * 4,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![2 => Float32x2],
-                    },
-                ],
+                module: &shader,
+                entry_point: "vs_main",
+                buffers: &[Vertex::desc()],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &draw_shader,
-                entry_point: "main_fs",
+                module: &shader,
+                entry_point: "fs_main",
                 targets: &[Some(swapchain_format.into())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
@@ -316,158 +344,55 @@ impl Pipeline {
             cache: None,
         });
 
-        Ok(render_pipeline)
+        Ok(pipeline)
     }
 
-    fn create_passes(
+    /// Create render pass.
+    /// Will return an error in debug, and crash in release/wasm if a shader is malformed.
+    fn create_render_pass(
         surface: &wgpu::Surface,
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
-    ) -> Result<(ComputePass, RenderPass), PipelineError> {
-        let sim_param_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Simulation Parameter Buffer"),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            size: BoidsSettings::get_size(),
-            mapped_at_creation: false,
-        });
+    ) -> Result<Pass, PipelineError> {
+        // create uniform buffer.
+        // let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
+        //     label: Some("Uniforms Buffer"),
+        //     size: GlowSettings::get_size(),
+        //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        //     mapped_at_creation: false,
+        // });
 
-        let vertex_buffer_data = [-0.01f32, -0.02, 0.01, -0.02, 0.00, 0.02];
-        let vertices_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Vertex Buffer"),
-            contents: bytemuck::bytes_of(&vertex_buffer_data),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
+        // let uniforms_bind_group_layout =
+        //     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        //         entries: &[wgpu::BindGroupLayoutEntry {
+        //             binding: 0,
+        //             visibility: wgpu::ShaderStages::VERTEX,
+        //             ty: wgpu::BindingType::Buffer {
+        //                 ty: wgpu::BufferBindingType::Uniform,
+        //                 has_dynamic_offset: false,
+        //                 min_binding_size: None,
+        //             },
+        //             count: None,
+        //         }],
+        //         label: Some("uniforms_bind_group_layout"),
+        //     });
 
-        let mut initial_particle_data = vec![0.0f32; (4 * NUM_PARTICLES) as usize];
-        let mut rng = WyRand::new_seed(42);
-        let mut unif = || rng.generate::<f32>() * 2f32 - 1f32; // Generate a num (-1, 1)
-        for particle_instance_chunk in initial_particle_data.chunks_mut(4) {
-            particle_instance_chunk[0] = unif(); // posx
-            particle_instance_chunk[1] = unif(); // posy
-            particle_instance_chunk[2] = unif() * 0.1; // velx
-            particle_instance_chunk[3] = unif() * 0.1; // vely
-        }
+        // let uniforms_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        //     layout: &uniforms_bind_group_layout,
+        //     entries: &[wgpu::BindGroupEntry {
+        //         binding: 0,
+        //         resource: uniforms.as_entire_binding(),
+        //     }],
+        //     label: Some("uniforms_bind_group"),
+        // });
 
-        // creates two buffers of particle data each of size NUM_PARTICLES
-        // the two buffers alternate as dst and src for each frame
+        let pipeline =
+            Self::create_render_pipeline(surface, device, adapter)?;
 
-        let mut particle_buffers = Vec::<wgpu::Buffer>::new();
-
-        let compute_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(BoidsSettings::get_size()),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: true },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new((NUM_PARTICLES * 16) as _),
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 2,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new((NUM_PARTICLES * 16) as _),
-                        },
-                        count: None,
-                    },
-                ],
-                label: None,
-            });
-
-        let mut particle_bind_groups = Vec::<wgpu::BindGroup>::new();
-        for i in 0..2 {
-            particle_buffers.push(
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some(&format!("Particle Buffer {i}")),
-                    contents: bytemuck::cast_slice(&initial_particle_data),
-                    usage: wgpu::BufferUsages::VERTEX
-                        | wgpu::BufferUsages::STORAGE
-                        | wgpu::BufferUsages::COPY_DST,
-                }),
-            );
-        }
-
-        // create two bind groups, one for each buffer as the src
-        // where the alternate buffer is used as the dst
-
-        for i in 0..2 {
-            particle_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &compute_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: sim_param_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: particle_buffers[i].as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: particle_buffers[(i + 1) % 2].as_entire_binding(), // bind to opposite buffer
-                    },
-                ],
-                label: None,
-            }));
-        }
-
-        for i in 0..2 {
-            particle_bind_groups.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &compute_bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: sim_param_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: particle_buffers[i].as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: particle_buffers[(i + 1) % 2].as_entire_binding(), // bind to opposite buffer
-                    },
-                ],
-                label: None,
-            }));
-        }
-
-        // calculates number of work groups from PARTICLES_PER_GROUP constant
-        let work_group_count =
-            ((NUM_PARTICLES as f32) / (PARTICLES_PER_GROUP as f32)).ceil() as u32;
-
-        let compute_pipeline = Self::create_compute_pipeline(device, &compute_bind_group_layout)?;
-        let render_pipeline = Self::create_render_pipeline(surface, device, adapter)?;
-
-        Ok((
-            ComputePass {
-                compute_pipeline,
-                particle_bind_groups,
-                work_group_count,
-                parameters: sim_param_buffer,
-                bind_group_layout: compute_bind_group_layout,
-            },
-            RenderPass {
-                render_pipeline,
-                particle_buffers,
-                vertices_buffer,
-            },
-        ))
+        Ok(Pass {
+            pipeline,
+            //bind_group: uniforms_bind_group,
+            //uniform_buf: uniforms,
+        })
     }
 }

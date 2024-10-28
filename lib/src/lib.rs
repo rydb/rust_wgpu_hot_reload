@@ -13,6 +13,7 @@ pub mod mouse_input;
 pub mod pipeline;
 pub mod reload_flags;
 mod shader_builder;
+pub mod glow_shader;
 
 use crate::pipeline::{PipelineError, PipelineFuncs};
 
@@ -23,7 +24,10 @@ pub type ShaderBuilderForLibrary = ShaderBuilderFor<LibraryShaders>;
 // and re-imported in hot_lib.rs.
 pub use crate::camera_control::CameraLookAt;
 /// Specify which pipeline we want to run here.
-pub use demo_pipelines::polygon::Pipeline as CurrentPipeline;
+// pub use demo_pipelines::polygon::Pipeline as CurrentPipeline;
+
+pub use glow_shader::glow_shader::Pipeline as CurrentPipeline;
+
 use shader_builder::{LibraryShaders, ShaderBuilderFor};
 // pub use demo_pipelines::boids::Pipeline as CurrentPipeline;
 // pub use demo_pipelines::raymarching::Pipeline as CurrentPipeline;
