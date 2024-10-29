@@ -168,6 +168,8 @@ impl PipelineFuncs for Pipeline {
         ));
         ui.label(std::format!("framerate: {:.0}fps", self.frame_rate.get()));
     }
+    
+
 }
 
 impl Pipeline {

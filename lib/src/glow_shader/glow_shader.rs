@@ -5,12 +5,30 @@ use crate::frame_rate::FrameRate;
 use crate::pipeline::{PipelineError, PipelineFuncs};
 use crate::ShaderBuilderForLibrary;
 
+
+/// A simple struct to store a wgpu pass with a uniform buffer.
+#[derive(Debug)]
+pub struct Pass {
+    /// Pipeline that will be called to render the pass
+    pub pipeline: wgpu::RenderPipeline,
+    /// Buffer bind group for this pass.
+    pub bind_group: wgpu::BindGroup,
+    /// Single uniform buffer for this pass.
+    pub uniform_buf: wgpu::Buffer,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
     color: [f32; 3],
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct ScreenResolution([f32; 2]);
+
+const TEST_RESOLUTION: &[ScreenResolution] = &[ScreenResolution([1000.0, 1000.0])];
 
 const VERTICES: &[Vertex] = &[
     Vertex {
@@ -67,44 +85,23 @@ impl Vertex {
 const INDICES: &[u16] = &[0, 1, 2, 3, 4, 5,/* padding */ 0];
 
 
-
-// pub const SCREEN_VERT =
-/// A simple struct to store a wgpu pass with a uniform buffer.
-#[derive(Debug)]
-pub struct Pass {
-    /// Pipeline that will be called to render the pass
-    pub pipeline: wgpu::RenderPipeline,
-    // Buffer bind group for this pass.
-    //pub bind_group: wgpu::BindGroup,
-    // Single uniform buffer for this pass.
-    //pub uniform_buf: wgpu::Buffer,
-}
-
 /// Settings for the `PipelineFuncs`
 /// `polygon_edge_count` is not exposed in ui on purpose for  purposes
 /// change it in the code with hot-reload enable to see it working.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GlowSettings {
-    // // elapsed take the speed into consideration
-    // elapsed: f32,
-    // /// polygon radius in window, between 0 and 1
-    // polygon_size: f32, // exposed in ui
-    // /// regular polygon edge count, expected to be 3 or more
-    // polygon_edge_count: u32, // exposed in rust only
-    // /// speed of the rotation
-    // speed: f32, // exposed in ui
+    res_x: f32,
+    res_y: f32,
 }
 
 impl GlowSettings {
-    pub fn new() -> Self {
-        Self {
-            // elapsed: 0.0,
-            // polygon_size: 0.5,
-            // polygon_edge_count: 3,
-            // speed: 1.0,
-        }
-    }
+    // pub fn new() -> Self {
+    //     Self {
+    //         res_x: 1000.0,
+    //         res_y: 1000.0,
+    //     }
+    // }
 
     pub fn get_size() -> u64 {
         std::mem::size_of::<Self>() as _
@@ -124,7 +121,6 @@ pub struct Pipeline {
     frame_rate: FrameRate,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    screen_resolution: wgpu::BindGroup,
     num_indices: u32
 }
 
@@ -150,58 +146,32 @@ impl PipelineFuncs for Pipeline {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let screen_resolution =
-        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Screen resolution"),
-            contents: &[255, 255],
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        // let screen_resolution = device.create_bind_group(&wgpu::util::b)
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("scene bind_group_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
-        });
 
-        let screen_resolution_bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("scene bind_group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: screen_resolution.as_entire_binding(),
-                },
-            ],
-        });
 
         let num_indices = INDICES.len() as u32;
 
         Ok(Self {
-            render_pass,
+            //render_pass,
             _start_time: web_time::Instant::now(),
             last_update: web_time::Instant::now(),
-            settings: GlowSettings::new(),
+            settings: GlowSettings {
+                res_x: 1000.0,
+                res_y: 1000.0,
+            },
             frame_rate: FrameRate::default(),
             vertex_buffer,
             index_buffer,
             num_indices,
-            screen_resolution: screen_resolution_bindgroup,
+            render_pass,
+            //screen_resolution: screen_resolution_bindgroup,
         })
     }
 
     /// Get pipeline name.
     fn get_name() -> &'static str {
-        "demo polygon"
+        "glow_shader"
     }
 
     /// Recreate render pass.
@@ -235,11 +205,12 @@ impl PipelineFuncs for Pipeline {
         //self.settings.elapsed += last_frame_duration * self.settings.speed;
         self.frame_rate.update(last_frame_duration);
         self.last_update = web_time::Instant::now();
-        // queue.write_buffer(
-        //     &self.render_pass.uniform_buf,
-        //     0,
-        //     bytemuck::cast_slice(&[self.settings]),
-        // );
+        
+        queue.write_buffer(
+            &self.render_pass.uniform_buf,
+            0,
+            bytemuck::cast_slice(&[self.settings]),
+        );
     }
 
     /// Render pipeline.
@@ -249,6 +220,8 @@ impl PipelineFuncs for Pipeline {
         // hence the * 3 vertex count, a square results in 4 triangles so 12 vertices to draw.
         //let vertex_count = self.settings.polygon_edge_count * 3;
 
+
+        
         // Create a command encoder.
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -270,6 +243,10 @@ impl PipelineFuncs for Pipeline {
                 occlusion_query_set: None,
             });
             render_pass.set_pipeline(&self.render_pass.pipeline);
+            // render_pass.set_bind_group(0, &self.screen_resolution, &[]);
+
+            render_pass.set_bind_group(0, &self.render_pass.bind_group, &[]);
+
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
@@ -301,7 +278,7 @@ impl Pipeline {
         surface: &wgpu::Surface,
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
-        //uniforms_bind_group_layout: &wgpu::BindGroupLayout,
+        uniforms_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Result<wgpu::RenderPipeline, PipelineError> {
         
         
@@ -315,7 +292,7 @@ impl Pipeline {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
             bind_group_layouts: &[
-                //uniforms_bind_group_layout
+                uniforms_bind_group_layout
             ],
             push_constant_ranges: &[],
         });
@@ -354,43 +331,54 @@ impl Pipeline {
         device: &wgpu::Device,
         adapter: &wgpu::Adapter,
     ) -> Result<Pass, PipelineError> {
-        // create uniform buffer.
-        // let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
-        //     label: Some("Uniforms Buffer"),
-        //     size: GlowSettings::get_size(),
+        // let screen_resolution =
+        // device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        //     label: Some("Screen resolution"),
+        //     contents: bytemuck::cast_slice(TEST_RESOLUTION),
         //     usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        //     mapped_at_creation: false,
         // });
+        let screen_resolution = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Uniform Buffers"),
+            size: GlowSettings::get_size(),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
-        // let uniforms_bind_group_layout =
-        //     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        //         entries: &[wgpu::BindGroupLayoutEntry {
-        //             binding: 0,
-        //             visibility: wgpu::ShaderStages::VERTEX,
-        //             ty: wgpu::BindingType::Buffer {
-        //                 ty: wgpu::BufferBindingType::Uniform,
-        //                 has_dynamic_offset: false,
-        //                 min_binding_size: None,
-        //             },
-        //             count: None,
-        //         }],
-        //         label: Some("uniforms_bind_group_layout"),
-        //     });
 
-        // let uniforms_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        //     layout: &uniforms_bind_group_layout,
-        //     entries: &[wgpu::BindGroupEntry {
-        //         binding: 0,
-        //         resource: uniforms.as_entire_binding(),
-        //     }],
-        //     label: Some("uniforms_bind_group"),
-        // });
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("scene bind_group_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let screen_resolution_bindgroup = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("scene bind_group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: screen_resolution.as_entire_binding(),
+                },
+            ],
+        });
 
         let pipeline =
-            Self::create_render_pipeline(surface, device, adapter)?;
+            Self::create_render_pipeline(surface, device, adapter, &bind_group_layout)?;
 
         Ok(Pass {
             pipeline,
+            bind_group: screen_resolution_bindgroup,
+            uniform_buf: screen_resolution
             //bind_group: uniforms_bind_group,
             //uniform_buf: uniforms,
         })
