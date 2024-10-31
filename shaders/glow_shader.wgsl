@@ -15,6 +15,11 @@ struct VertexOutput {
     @location(0) color: vec3<f32>,
 };
 
+/// signed distance field
+fn sdfCircle(p: vec2<f32>, r: f32) -> f32 {
+  return length(p) - r;
+}
+
 
 // Vertex shader
 @vertex
@@ -30,21 +35,38 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var uv = in.clip_position;
+    var uv = vec2(in.clip_position.xy);
     var pos = 0.5 - uv;
 
-    pos.y /= (f32(uniforms.res_x)/f32(uniforms.res_y));
+    var color = vec4(in.color, 1.0);
+    
+    color = vec4<f32>(uv.x, uv.y, 0.0, 0.0);
+    // var radius = 1.0;
+    // var center = vec2(0.0, 0.0);
 
-    var dist = 1.0/length(pos);
+    // var distanceToCircle = sdfCircle(uv - center, radius);
+    
+    // if distanceToCircle > 0.0 {
+    //     color = vec4(0.0, 1.0, 0.0, 1.0);
+    // } else {
+    //     color = vec4(0.0, 0.0, 1.0, 1.0);
+    // }
+    // //color.x = 1.0;
+    // //color = vec4(uv.xyz, 0.0);
+    return color;
 
-    dist *= 0.1;
+    // pos.y /= (f32(uniforms.res_x)/f32(uniforms.res_y));
 
-    dist = pow(dist, 0.8);
+    // var dist = 1.0/length(pos);
 
-    var col = dist * vec3(1.0, 0.5, 0.25);
+    // dist *= 0.1;
 
-    col = 1.0 - exp( -col);
+    // dist = pow(dist, 0.8);
 
-    // return uv;
-    return vec4<f32>(col, 1.0);
+    // var col = dist * vec3(1.0, 0.5, 0.25);
+
+    // col = 1.0 - exp( -col);
+
+    // // return uv;
+    // return vec4<f32>(col, 1.0);
 }
