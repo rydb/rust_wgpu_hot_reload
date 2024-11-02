@@ -31,18 +31,7 @@ struct ScreenResolution([f32; 2]);
 const TEST_RESOLUTION: &[ScreenResolution] = &[ScreenResolution([1000.0, 1000.0])];
 
 const VERTICES: &[Vertex] = &[
-    Vertex {
-        position: [-1.0, 1.0, 0.0],
-        color: [1.0, 0.0, 0.0],
-    },
-    Vertex {
-        position: [-1.0, -1.0, 0.0],
-        color: [0.0, 1.0, 0.0],
-    },
-    Vertex {
-        position: [1.0, -1.0, 0.0],
-        color: [0.0, 0.0, 1.0],
-    },
+
 
 
     Vertex {
@@ -56,6 +45,18 @@ const VERTICES: &[Vertex] = &[
     Vertex {
         position: [-1.0, 1.0, 0.0],
         color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-1.0, 1.0, 0.0],
+        color: [1.0, 0.0, 0.0],
+    },
+    Vertex {
+        position: [-1.0, -1.0, 0.0],
+        color: [0.0, 1.0, 0.0],
+    },
+    Vertex {
+        position: [1.0, -1.0, 0.0],
+        color: [0.0, 0.0, 1.0],
     },
 ];
 
@@ -91,8 +92,7 @@ const INDICES: &[u16] = &[0, 1, 2, 3, 4, 5,/* padding */ 0];
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GlowSettings {
-    res_x: f32,
-    res_y: f32,
+    res: [f32; 2],
 }
 
 impl GlowSettings {
@@ -157,8 +157,7 @@ impl PipelineFuncs for Pipeline {
             _start_time: web_time::Instant::now(),
             last_update: web_time::Instant::now(),
             settings: GlowSettings {
-                res_x: 1000.0,
-                res_y: 1000.0,
+                res: [_surface_configuration.width as f32, _surface_configuration.height as f32],
             },
             frame_rate: FrameRate::default(),
             vertex_buffer,

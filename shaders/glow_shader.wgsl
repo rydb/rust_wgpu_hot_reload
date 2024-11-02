@@ -1,10 +1,9 @@
 struct Settings {
-    res_x: f32,
-    res_y: f32,
+    res: vec2<f32>
 }
 
 @group(0) @binding(0)
-var<uniform> uniforms: Settings;
+var<uniform> settings: Settings;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -35,24 +34,30 @@ fn vs_main(
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    var uv = vec2(in.clip_position.xy);
-    var pos = 0.5 - uv;
+    var white = vec4(1.0, 1.0, 1.0, 1.0);
+    var color = vec4(0.0, 0.0, 0.0, 0.0);
+    var uv = vec2(in.clip_position.xy / settings.res);
+    uv = uv - 0.5;
+    uv = uv * settings.res / 100.0;
 
-    var color = vec4(in.color, 1.0);
-    
-    color = vec4<f32>(uv.x, uv.y, 0.0, 0.0);
-    // var radius = 1.0;
-    // var center = vec2(0.0, 0.0);
+    var radius = 1.0;
+    var center = vec2(0.0, 0.0);
 
-    // var distanceToCircle = sdfCircle(uv - center, radius);
+    var distanceToCircle = sdfCircle(uv - center, radius);
+
+    if distanceToCircle > 0.0 {
+        color = vec4(0.0, 0.0, 1.0, 1.0);
+    } else {
+        color = vec4(1.0, 0.0, 0.0, 1.0);
+    }
     
-    // if distanceToCircle > 0.0 {
-    //     color = vec4(0.0, 1.0, 0.0, 1.0);
-    // } else {
-    //     color = vec4(0.0, 0.0, 1.0, 1.0);
-    // }
-    // //color.x = 1.0;
-    // //color = vec4(uv.xyz, 0.0);
+    color = color * exp(distanceToCircle);
+    
+    color = color * (1.0 - exp(-2.0 * abs(distanceToCircle)));
+    
+    //color = mix(white, color, 2.0 * abs(distanceToCircle));
+    //color = vec4<f32>(uv.x, uv.y, 0.0, 0.0);
+
     return color;
 
     // pos.y /= (f32(uniforms.res_x)/f32(uniforms.res_y));
